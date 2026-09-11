@@ -58,34 +58,66 @@ export class DraftGenerationService {
           generated.content,
           sourceText,
         );
-        const latest = await this.prisma.draft.findFirst({
-          where: { publicationRequestId, platform },
-          orderBy: { version: 'desc' },
-          select: { version: true },
-        });
-        await this.prisma.draft.create({
-          data: {
-            publicationRequestId,
-            platform,
-            version: (latest?.version ?? 0) + 1,
-            status: validation.isValid
-              ? DraftStatus.PROPOSED
-              : DraftStatus.REJECTED,
-            content: generated.content,
-            validationResult: validation as unknown as Prisma.InputJsonValue,
-            generationContext: {
-              generator: 'mock',
-              referenceIds: references.map((reference) => reference.id),
-              selectedImageFileIds: generated.selectedImageFileIds,
-              selectionReason: generated.selectionReason,
-            },
+        await this.persistGeneratedDraft({
+          publicationRequestId,
+          platform,
+          validation,
+          content: generated.content,
+          generationContext: {
+            generator: this.draftGenerator.constructor.name,
+            referenceIds: references.map((reference) => reference.id),
+            selectedImageFileIds: generated.selectedImageFileIds,
+            selectionReason: generated.selectionReason,
           },
         });
       }),
     );
-    await this.prisma.publicationRequest.update({
-      where: { id: publicationRequestId },
-      data: { status: RequestStatus.PENDING_REVIEW },
+  }
+
+  private async persistGeneratedDraft(input: {
+    publicationRequestId: string;
+    platform: Platform;
+    validation: ReturnType<DraftValidationService['validate']>;
+    content: string;
+    generationContext: Prisma.InputJsonValue;
+  }): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      // Updating the parent acquires a row lock in PostgreSQL. That serializes
+      // version allocation for concurrent regeneration requests.
+      await tx.publicationRequest.update({
+        where: { id: input.publicationRequestId },
+        data: { status: RequestStatus.PENDING_REVIEW },
+      });
+      const latest = await tx.draft.findFirst({
+        where: {
+          publicationRequestId: input.publicationRequestId,
+          platform: input.platform,
+        },
+        orderBy: { version: 'desc' },
+        select: { version: true },
+      });
+      await tx.draft.updateMany({
+        where: {
+          publicationRequestId: input.publicationRequestId,
+          platform: input.platform,
+          status: DraftStatus.PROPOSED,
+        },
+        data: { status: DraftStatus.SUPERSEDED },
+      });
+      await tx.draft.create({
+        data: {
+          publicationRequestId: input.publicationRequestId,
+          platform: input.platform,
+          version: (latest?.version ?? 0) + 1,
+          status: input.validation.isValid
+            ? DraftStatus.PROPOSED
+            : DraftStatus.REJECTED,
+          content: input.content,
+          validationResult:
+            input.validation as unknown as Prisma.InputJsonValue,
+          generationContext: input.generationContext,
+        },
+      });
     });
   }
 }

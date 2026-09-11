@@ -5,14 +5,35 @@ export interface ReviewCallback {
   action: ReviewAction;
   platform: Platform;
   publicationRequestId: string;
+  draftId: string;
 }
 
 export function parseReviewCallback(data?: string): ReviewCallback | null {
-  const [namespace, action, platform, publicationRequestId, extra] =
+  const [namespace, action, platform, publicationRequestId, draftId, extra] =
     data?.split('|') ?? [];
-  if (namespace !== 'review' || extra || !publicationRequestId) return null;
-  if (!['APPROVE', 'REJECT', 'REGENERATE', 'EDIT'].includes(action))
+  const actions: Record<string, ReviewAction> = {
+    A: 'APPROVE',
+    R: 'REJECT',
+    G: 'REGENERATE',
+    E: 'EDIT',
+  };
+  const platforms: Record<string, Platform> = {
+    F: Platform.FACEBOOK,
+    X: Platform.X,
+  };
+  if (
+    namespace !== 'r' ||
+    extra ||
+    !publicationRequestId ||
+    !draftId ||
+    !actions[action] ||
+    !platforms[platform]
+  )
     return null;
-  if (platform !== Platform.FACEBOOK && platform !== Platform.X) return null;
-  return { action: action as ReviewAction, platform, publicationRequestId };
+  return {
+    action: actions[action],
+    platform: platforms[platform],
+    publicationRequestId,
+    draftId,
+  };
 }

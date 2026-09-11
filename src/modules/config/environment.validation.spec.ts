@@ -14,4 +14,20 @@ describe('validateEnvironment', () => {
       validateEnvironment({ DATABASE_URL: databaseUrl, STORAGE_DRIVER: 's3' }),
     ).toThrow('S3_BUCKET is required');
   });
+  it('requires Telegram authentication in production', () => {
+    expect(() =>
+      validateEnvironment({
+        DATABASE_URL: databaseUrl,
+        NODE_ENV: 'production',
+      }),
+    ).toThrow('TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET is required');
+  });
+  it('rejects a media limit above 20 MiB', () => {
+    expect(() =>
+      validateEnvironment({
+        DATABASE_URL: databaseUrl,
+        MAX_TELEGRAM_FILE_SIZE_BYTES: String(20 * 1024 * 1024 + 1),
+      }),
+    ).toThrow('MAX_TELEGRAM_FILE_SIZE_BYTES');
+  });
 });

@@ -13,7 +13,9 @@ describe('ReviewService', () => {
   function createService(request: unknown, publicationResult?: unknown) {
     const prisma = {
       draft: {
-        findFirst: jest.fn().mockResolvedValue({ id: 'draft-1' }),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'draft-1', status: DraftStatus.PROPOSED }),
         update: jest.fn(),
       },
       approval: { create: jest.fn() },
@@ -58,6 +60,7 @@ describe('ReviewService', () => {
         action: 'REJECT',
         platform: Platform.FACEBOOK,
         publicationRequestId,
+        draftId: 'draft-1',
       }),
     ).resolves.toBe('FACEBOOK rechazado.');
 
@@ -83,6 +86,7 @@ describe('ReviewService', () => {
         action: 'APPROVE',
         platform: Platform.FACEBOOK,
         publicationRequestId,
+        draftId: 'draft-1',
       }),
     ).resolves.toContain('FACEBOOK publicaci\u00f3n simulada:');
 

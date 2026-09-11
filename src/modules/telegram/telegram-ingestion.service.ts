@@ -71,6 +71,16 @@ export class TelegramIngestionService {
       );
       return { accepted: false, ignored: true };
     }
+    if (!this.assetsAreWithinLimit(message.assets)) {
+      this.logger.warn(
+        `Ignoring update ${message.updateId}: declared media size exceeds the configured limit`,
+      );
+      return {
+        accepted: true,
+        ignored: true,
+        message: 'El archivo excede el tamaño máximo permitido.',
+      };
+    }
 
     if (message.text?.trim() === '/finalizar') {
       return this.finalizeAlbum(message.chatId, user.id);
@@ -315,7 +325,17 @@ export class TelegramIngestionService {
         try {
           const file = await this.telegramBotApiService.downloadFile(
             asset.telegramFileId,
+            this.maxTelegramFileSize(),
           );
+          if (
+            asset.kind === 'IMAGE' &&
+            file.contentType &&
+            !file.contentType.toLowerCase().startsWith('image/')
+          ) {
+            throw new Error(
+              'Telegram returned a non-image content type for an image',
+            );
+          }
           const storageKey = this.storageKey(
             publicationRequestId,
             telegramUpdateId,
@@ -364,5 +384,21 @@ export class TelegramIngestionService {
       .digest('hex')
       .slice(0, 16);
     return `telegram/${publicationRequestId}/${updateId}/${index}-${suffix}`;
+  }
+
+  private assetsAreWithinLimit(
+    assets: NormalizedTelegramMessage['assets'],
+  ): boolean {
+    const limit = this.maxTelegramFileSize();
+    return assets.every(
+      (asset) => asset.sizeBytes === undefined || asset.sizeBytes <= limit,
+    );
+  }
+
+  private maxTelegramFileSize(): number {
+    return (
+      this.configService.get<number>('MAX_TELEGRAM_FILE_SIZE_BYTES') ??
+      10 * 1024 * 1024
+    );
   }
 }

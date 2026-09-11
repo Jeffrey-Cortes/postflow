@@ -3,6 +3,7 @@ import {
   AuditEventType,
   DraftStatus,
   Platform,
+  Prisma,
   PublicationStatus,
 } from '@prisma/client';
 import { createHash } from 'node:crypto';
@@ -45,17 +46,11 @@ export class PublicationService {
       platform,
       draft.id,
     );
-    const publication = await this.prisma.publication.upsert({
-      where: {
-        publicationRequestId_platform: { publicationRequestId, platform },
-      },
-      create: {
-        publicationRequestId,
-        draftId: draft.id,
-        platform,
-        idempotencyKey,
-      },
-      update: {},
+    const publication = await this.getOrCreatePublication({
+      publicationRequestId,
+      draftId: draft.id,
+      platform,
+      idempotencyKey,
     });
     if (publication.status === PublicationStatus.PUBLISHED)
       return {
@@ -142,6 +137,36 @@ export class PublicationService {
       .update(`${requestId}:${platform}:${draftId}`)
       .digest('hex');
   }
+
+  private async getOrCreatePublication(input: {
+    publicationRequestId: string;
+    draftId: string;
+    platform: Platform;
+    idempotencyKey: string;
+  }) {
+    const existing = await this.prisma.publication.findFirst({
+      where: { draftId: input.draftId },
+    });
+    if (existing) return existing;
+    try {
+      return await this.prisma.publication.create({ data: input });
+    } catch (error) {
+      if (!this.isUniqueConstraintError(error)) throw error;
+      return this.prisma.publication.findFirstOrThrow({
+        where: { draftId: input.draftId },
+      });
+    }
+  }
+
+  private isUniqueConstraintError(
+    error: unknown,
+  ): error is Prisma.PrismaClientKnownRequestError {
+    return (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2002'
+    );
+  }
+
   private audit(
     organizationId: string,
     publicationRequestId: string,

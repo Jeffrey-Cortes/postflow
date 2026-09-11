@@ -45,7 +45,10 @@ export class TelegramBotApiService {
     });
   }
 
-  async downloadFile(fileId: string): Promise<DownloadedTelegramFile> {
+  async downloadFile(
+    fileId: string,
+    maxBytes: number,
+  ): Promise<DownloadedTelegramFile> {
     const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
     if (!token)
       throw new Error('TELEGRAM_BOT_TOKEN is required to download files');
@@ -67,8 +70,16 @@ export class TelegramBotApiService {
       throw new Error(
         `Telegram file download failed with HTTP ${fileResponse.status}`,
       );
+    const contentLength = Number(fileResponse.headers.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      throw new Error(`Telegram file exceeds the ${maxBytes}-byte limit`);
+    }
+    const body = new Uint8Array(await fileResponse.arrayBuffer());
+    if (body.byteLength > maxBytes) {
+      throw new Error(`Telegram file exceeds the ${maxBytes}-byte limit`);
+    }
     return {
-      body: new Uint8Array(await fileResponse.arrayBuffer()),
+      body,
       contentType: fileResponse.headers.get('content-type') ?? undefined,
     };
   }
@@ -94,12 +105,22 @@ export class TelegramBotApiService {
 }
 
 function labelFor(callback: string): string {
-  const [, action, platform] = callback.split('|');
+  const [, actionCode, platformCode] = callback.split('|');
+  const actionMap = {
+    A: 'APPROVE',
+    E: 'EDIT',
+    G: 'REGENERATE',
+    R: 'REJECT',
+  } as const;
+  const action = actionMap[actionCode as keyof typeof actionMap];
+  const platform = ({ F: 'FACEBOOK', X: 'X' } as const)[
+    platformCode as 'F' | 'X'
+  ];
   const labels: Record<string, string> = {
     APPROVE: 'Aprobar',
     EDIT: 'Editar',
     REGENERATE: 'Regenerar',
     REJECT: 'Rechazar',
   };
-  return `${labels[action] ?? action} ${platform}`;
+  return `${labels[action] ?? actionCode} ${platform ?? platformCode}`;
 }
