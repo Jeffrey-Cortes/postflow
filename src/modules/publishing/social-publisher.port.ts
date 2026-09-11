@@ -11,6 +11,7 @@ export interface PublishInput {
 export interface PublishResult {
   externalPostId: string;
   externalUrl: string;
+  simulated?: boolean;
 }
 export interface SocialPublisher {
   platform: Platform;

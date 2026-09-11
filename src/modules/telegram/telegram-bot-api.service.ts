@@ -6,6 +6,11 @@ export interface TelegramInlineButton {
   callback_data: string;
 }
 
+export interface DownloadedTelegramFile {
+  body: Uint8Array;
+  contentType?: string;
+}
+
 @Injectable()
 export class TelegramBotApiService {
   private readonly logger = new Logger(TelegramBotApiService.name);
@@ -38,6 +43,34 @@ export class TelegramBotApiService {
       callback_query_id: callbackId,
       text,
     });
+  }
+
+  async downloadFile(fileId: string): Promise<DownloadedTelegramFile> {
+    const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
+    if (!token)
+      throw new Error('TELEGRAM_BOT_TOKEN is required to download files');
+    const metadataResponse = await fetch(
+      `https://api.telegram.org/bot${token}/getFile?file_id=${encodeURIComponent(fileId)}`,
+      { signal: AbortSignal.timeout(10_000) },
+    );
+    const metadata = (await metadataResponse.json()) as {
+      ok?: boolean;
+      result?: { file_path?: string };
+    };
+    if (!metadata.ok || !metadata.result?.file_path)
+      throw new Error('Telegram did not provide a file path');
+    const fileResponse = await fetch(
+      `https://api.telegram.org/file/bot${token}/${metadata.result.file_path}`,
+      { signal: AbortSignal.timeout(20_000) },
+    );
+    if (!fileResponse.ok)
+      throw new Error(
+        `Telegram file download failed with HTTP ${fileResponse.status}`,
+      );
+    return {
+      body: new Uint8Array(await fileResponse.arrayBuffer()),
+      contentType: fileResponse.headers.get('content-type') ?? undefined,
+    };
   }
 
   private async call(method: string, body: object): Promise<void> {

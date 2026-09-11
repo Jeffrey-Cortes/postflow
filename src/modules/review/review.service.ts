@@ -4,6 +4,8 @@ import {
   DraftStatus,
   Platform,
   Prisma,
+  PublicationStatus,
+  RequestStatus,
 } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { DraftGenerationService } from '../generation/draft-generation.service';
@@ -54,15 +56,18 @@ export class ReviewService {
           },
         }),
       ]);
-      if (decision === ApprovalDecision.REJECTED)
+      if (decision === ApprovalDecision.REJECTED) {
+        await this.synchronizeRequestStatus(callback.publicationRequestId);
         return `${callback.platform} rechazado.`;
+      }
       const result = await this.publicationService.publishApproved(
         callback.publicationRequestId,
         callback.platform,
       );
+      await this.synchronizeRequestStatus(callback.publicationRequestId);
       return result.status === 'PUBLISHED'
-        ? `${callback.platform} publicado: ${result.url}`
-        : `${callback.platform} aprobado, pero la publicaci\u00f3n mock fall\u00f3: ${result.error}`;
+        ? `${callback.platform} ${result.simulated ? 'publicaci\u00f3n simulada' : 'publicado'}: ${result.url}`
+        : `${callback.platform} aprobado, pero la publicaci\u00f3n fall\u00f3: ${result.error}`;
     }
     if (callback.action === 'REGENERATE') {
       await this.generationService.generateForRequest(
@@ -169,5 +174,53 @@ export class ReviewService {
         'No active draft was found for this review action',
       );
     return draft;
+  }
+
+  private async synchronizeRequestStatus(
+    publicationRequestId: string,
+  ): Promise<void> {
+    const request = await this.prisma.publicationRequest.findUnique({
+      where: { id: publicationRequestId },
+      select: {
+        drafts: { select: { id: true, status: true } },
+        publications: { select: { draftId: true, status: true } },
+      },
+    });
+    if (!request || request.drafts.length === 0) return;
+
+    const status = this.requestStatus(request.drafts, request.publications);
+    await this.prisma.publicationRequest.update({
+      where: { id: publicationRequestId },
+      data: { status },
+    });
+  }
+
+  private requestStatus(
+    drafts: Array<{ id: string; status: DraftStatus }>,
+    publications: Array<{ draftId: string; status: PublicationStatus }>,
+  ): RequestStatus {
+    if (publications.some(({ status }) => status === PublicationStatus.FAILED))
+      return RequestStatus.FAILED;
+    if (drafts.some(({ status }) => status === DraftStatus.PROPOSED))
+      return RequestStatus.PENDING_REVIEW;
+    if (drafts.every(({ status }) => status === DraftStatus.REJECTED))
+      return RequestStatus.REJECTED;
+
+    const approvedDraftIds = new Set(
+      drafts
+        .filter(({ status }) => status === DraftStatus.APPROVED)
+        .map(({ id }) => id),
+    );
+    const publishedDraftIds = new Set(
+      publications
+        .filter(({ status }) => status === PublicationStatus.PUBLISHED)
+        .map(({ draftId }) => draftId),
+    );
+    if (
+      [...approvedDraftIds].every((draftId) => publishedDraftIds.has(draftId))
+    ) {
+      return RequestStatus.COMPLETED;
+    }
+    return RequestStatus.PENDING_REVIEW;
   }
 }

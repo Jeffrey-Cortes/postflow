@@ -14,6 +14,7 @@ export interface PublicationAttemptResult {
   status: PublicationStatus;
   url?: string;
   error?: string;
+  simulated?: boolean;
 }
 
 @Injectable()
@@ -113,6 +114,7 @@ export class PublicationService {
         platform,
         status: PublicationStatus.PUBLISHED,
         url: result.externalUrl,
+        simulated: result.simulated,
       };
     } catch (error) {
       const message =

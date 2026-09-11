@@ -60,5 +60,13 @@ export function validateEnvironment(config: Record<string, unknown>) {
       'Invalid environment configuration: S3_BUCKET is required when STORAGE_DRIVER=s3',
     );
   }
+  if (
+    environment.STORAGE_DRIVER === StorageDriver.S3 &&
+    !environment.AWS_REGION
+  ) {
+    throw new Error(
+      'Invalid environment configuration: AWS_REGION is required when STORAGE_DRIVER=s3',
+    );
+  }
   return environment;
 }
