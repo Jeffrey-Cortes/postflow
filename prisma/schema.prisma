@@ -1,0 +1,283 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Platform {
+  FACEBOOK
+  X
+}
+
+enum RequestStatus {
+  RECEIVING
+  READY_FOR_GENERATION
+  PENDING_REVIEW
+  PUBLISHING
+  COMPLETED
+  REJECTED
+  FAILED
+}
+
+enum AssetKind {
+  IMAGE
+  DOCUMENT
+}
+
+enum DraftStatus {
+  PROPOSED
+  APPROVED
+  REJECTED
+  SUPERSEDED
+}
+
+enum ApprovalDecision {
+  APPROVED
+  REJECTED
+}
+
+enum PublicationStatus {
+  PENDING
+  PUBLISHING
+  PUBLISHED
+  FAILED
+}
+
+enum ReviewSessionAction {
+  EDIT
+}
+
+enum AuditEventType {
+  REQUEST_CREATED
+  DRAFT_GENERATED
+  DRAFT_VALIDATED
+  APPROVAL_RECORDED
+  PUBLICATION_ATTEMPTED
+  PUBLICATION_COMPLETED
+  PUBLICATION_FAILED
+}
+
+model Organization {
+  id                  String               @id @default(cuid())
+  name                String
+  slug                String               @unique
+  configuration       Json?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  users               User[]
+  styleRules          StyleRule[]
+  publicationRequests PublicationRequest[]
+  historicalPosts     HistoricalPost[]
+  auditEvents         AuditEvent[]
+}
+
+model User {
+  id             String                @id @default(cuid())
+  organizationId String
+  telegramUserId String                @unique
+  displayName    String?
+  isActive       Boolean               @default(true)
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  organization   Organization          @relation(fields: [organizationId], references: [id])
+  requestedPosts PublicationRequest[]  @relation("RequestedBy")
+  approvals      Approval[]
+  reviewSessions ReviewSession[]
+  auditEvents    AuditEvent[]
+}
+
+model StyleRule {
+  id             String       @id @default(cuid())
+  organizationId String
+  platform       Platform?
+  name           String
+  isRequired     Boolean      @default(false)
+  configuration  Json
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId, platform, isActive])
+}
+
+model PublicationRequest {
+  id                  String              @id @default(cuid())
+  organizationId      String
+  requestedById       String?
+  telegramChatId      String
+  status              RequestStatus       @default(RECEIVING)
+  sourceSummary       String?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  organization        Organization        @relation(fields: [organizationId], references: [id])
+  requestedBy         User?               @relation("RequestedBy", fields: [requestedById], references: [id])
+  receivedMessages    ReceivedMessage[]
+  assets              Asset[]
+  drafts              Draft[]
+  approvals           Approval[]
+  publications        Publication[]
+  auditEvents         AuditEvent[]
+  telegramMediaGroup  TelegramMediaGroup?
+  reviewSessions      ReviewSession[]
+
+  @@index([organizationId, status, createdAt])
+  @@index([telegramChatId, createdAt])
+}
+
+model ReceivedMessage {
+  id                   String              @id @default(cuid())
+  publicationRequestId String?
+  telegramChatId       String
+  telegramMessageId    String
+  telegramUpdateId     String              @unique
+  mediaGroupId         String?
+  text                 String?
+  caption              String?
+  receivedAt           DateTime
+  rawPayload           Json
+  createdAt            DateTime            @default(now())
+  publicationRequest   PublicationRequest? @relation(fields: [publicationRequestId], references: [id])
+  assets               Asset[]
+
+  @@unique([telegramChatId, telegramMessageId])
+  @@index([telegramChatId, mediaGroupId, receivedAt])
+}
+
+model TelegramMediaGroup {
+  id                   String             @id @default(cuid())
+  publicationRequestId String             @unique
+  telegramChatId       String
+  mediaGroupId         String
+  firstReceivedAt      DateTime
+  lastReceivedAt       DateTime
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  publicationRequest   PublicationRequest @relation(fields: [publicationRequestId], references: [id])
+
+  @@unique([telegramChatId, mediaGroupId])
+}
+
+model Asset {
+  id                   String              @id @default(cuid())
+  publicationRequestId String?
+  receivedMessageId    String?
+  kind                 AssetKind
+  originalFilename     String?
+  mimeType             String?
+  sizeBytes            Int?
+  telegramFileId       String?
+  storageKey           String?
+  checksum             String?
+  createdAt            DateTime            @default(now())
+  publicationRequest   PublicationRequest? @relation(fields: [publicationRequestId], references: [id])
+  receivedMessage      ReceivedMessage?    @relation(fields: [receivedMessageId], references: [id])
+
+  @@index([publicationRequestId])
+  @@index([receivedMessageId])
+}
+
+model Draft {
+  id                   String             @id @default(cuid())
+  publicationRequestId String
+  platform             Platform
+  version              Int
+  status               DraftStatus        @default(PROPOSED)
+  content              String
+  validationResult     Json?
+  generationContext    Json?
+  createdAt            DateTime           @default(now())
+  publicationRequest   PublicationRequest @relation(fields: [publicationRequestId], references: [id])
+  approvals            Approval[]
+  publications         Publication[]
+
+  @@unique([publicationRequestId, platform, version])
+  @@index([publicationRequestId, platform, status])
+}
+
+model HistoricalPost {
+  id             String       @id @default(cuid())
+  organizationId String
+  platform       Platform
+  externalId     String?
+  text           String
+  imageUrls      Json?
+  publishedAt    DateTime?
+  metadata       Json?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, platform, externalId])
+  @@index([organizationId, platform, publishedAt])
+}
+
+model Approval {
+  id                   String             @id @default(cuid())
+  publicationRequestId String
+  draftId              String
+  userId               String
+  platform             Platform
+  decision             ApprovalDecision
+  comment              String?
+  createdAt            DateTime           @default(now())
+  publicationRequest   PublicationRequest @relation(fields: [publicationRequestId], references: [id])
+  draft                Draft              @relation(fields: [draftId], references: [id])
+  user                 User               @relation(fields: [userId], references: [id])
+
+  @@index([publicationRequestId, platform, createdAt])
+}
+
+model ReviewSession {
+  id                   String              @id @default(cuid())
+  publicationRequestId String
+  userId               String
+  platform             Platform
+  action               ReviewSessionAction
+  expiresAt            DateTime
+  completedAt          DateTime?
+  createdAt            DateTime            @default(now())
+  publicationRequest   PublicationRequest  @relation(fields: [publicationRequestId], references: [id])
+  user                 User                @relation(fields: [userId], references: [id])
+
+  @@index([userId, completedAt, expiresAt])
+}
+
+model Publication {
+  id                   String            @id @default(cuid())
+  publicationRequestId String
+  draftId              String
+  platform             Platform
+  status               PublicationStatus @default(PENDING)
+  idempotencyKey       String            @unique
+  externalPostId       String?
+  externalUrl          String?
+  errorMessage         String?
+  publishedAt          DateTime?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  publicationRequest   PublicationRequest @relation(fields: [publicationRequestId], references: [id])
+  draft                Draft             @relation(fields: [draftId], references: [id])
+
+  @@unique([publicationRequestId, platform])
+  @@index([status, createdAt])
+}
+
+model AuditEvent {
+  id                   String              @id @default(cuid())
+  organizationId       String
+  publicationRequestId String?
+  userId               String?
+  type                 AuditEventType
+  payload              Json?
+  createdAt            DateTime            @default(now())
+  organization         Organization        @relation(fields: [organizationId], references: [id])
+  publicationRequest   PublicationRequest? @relation(fields: [publicationRequestId], references: [id])
+  user                 User?               @relation(fields: [userId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@index([publicationRequestId, createdAt])
+}

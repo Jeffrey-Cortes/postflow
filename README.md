@@ -1,98 +1,43 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Postflow
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Backend para recibir material desde Telegram, crear borradores de publicaciones, validarlos, obtener aprobación humana y registrar su publicación.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Desarrollo local
 
-## Description
+1. Copia `.env.example` como `.env` y ajusta sus valores si es necesario.
+2. Inicia PostgreSQL: `docker compose up -d postgres`.
+3. Instala dependencias: `pnpm install`.
+4. Aplica las migraciones: `pnpm prisma:migrate`.
+5. Ejecuta la API: `pnpm start:dev`.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+`GET /health` devuelve el estado básico del servicio. La conexión a PostgreSQL no se abre hasta que un módulo de dominio la necesite.
 
-## Project setup
+## Webhook de Telegram
 
-```bash
-$ pnpm install
-```
+La Fase 2 expone `POST /webhooks/telegram`. Guarda texto, captions, imágenes y documentos; deduplica por `update_id` y agrupa álbumes por `chat_id` + `media_group_id`. Solo acepta remitentes activos registrados en la tabla `User`.
 
-## Compile and run the project
+En producción configura `TELEGRAM_WEBHOOK_SECRET` y registra el mismo valor al crear el webhook de Telegram. Las actualizaciones no reconocidas se confirman sin persistirse para evitar reintentos innecesarios.
 
-```bash
-# development
-$ pnpm run start
+## Referencias históricas y generación mock
 
-# watch mode
-$ pnpm run start:dev
+`HistoryService` importa publicaciones normalizadas por organización y plataforma. Durante el MVP recupera hasta tres ejemplos mediante similitud léxica determinista; no copia su texto ni usa embeddings todavía. `DraftGenerationService` usa esas referencias para crear y validar borradores Facebook/X a través de un generador mock intercambiable por un proveedor de IA en una fase posterior.
 
-# production mode
-$ pnpm run start:prod
-```
+El importador admite CSV con las columnas obligatorias `platform,text` y las opcionales `externalId,publishedAt,imageUrls`. `imageUrls` acepta varias URLs separadas por `|`; se aceptan `FACEBOOK`, `X` y `TWITTER` como plataforma.
 
-## Run tests
+## Revisión humana
+
+Las acciones de Telegram usan callbacks con el formato `review|ACTION|PLATFORM|REQUEST_ID`. Cada acción se verifica contra un borrador propuesto que pertenezca al usuario solicitante. Aprobar solo guarda la aprobación: el publicador no existe todavía y ninguna acción puede publicar. Editar abre una sesión de 15 minutos para guardar una nueva versión; regenerar crea una nueva versión solo para la plataforma elegida.
+
+## Configuración
+
+Las variables de entorno se validan al iniciar. Para desarrollo, el almacenamiento es local. `STORAGE_DRIVER=s3` exige `S3_BUCKET`; las credenciales AWS no se guardan ni se versionan.
+
+## Calidad
 
 ```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
+pnpm prisma:generate
+pnpm test -- --runInBand
+pnpm test:e2e -- --runInBand
+pnpm build
+pnpm lint
 ```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
