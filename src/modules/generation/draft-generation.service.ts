@@ -21,7 +21,10 @@ export class DraftGenerationService {
   ): Promise<void> {
     const request = await this.prisma.publicationRequest.findUnique({
       where: { id: publicationRequestId },
-      include: { receivedMessages: { orderBy: { receivedAt: 'asc' } } },
+      include: {
+        receivedMessages: { orderBy: { receivedAt: 'asc' } },
+        assets: { where: { kind: 'IMAGE', telegramFileId: { not: null } } },
+      },
     });
     if (!request) throw new NotFoundException('Publication request not found');
     const sourceText =
@@ -42,14 +45,17 @@ export class DraftGenerationService {
           platform,
           sourceText,
         );
-        const content = await this.draftGenerator.generate({
+        const generated = await this.draftGenerator.generate({
           platform,
           sourceText,
           references,
+          availableImageFileIds: request.assets.flatMap((asset) =>
+            asset.telegramFileId ? [asset.telegramFileId] : [],
+          ),
         });
         const validation = this.validationService.validate(
           platform,
-          content,
+          generated.content,
           sourceText,
         );
         const latest = await this.prisma.draft.findFirst({
@@ -65,11 +71,13 @@ export class DraftGenerationService {
             status: validation.isValid
               ? DraftStatus.PROPOSED
               : DraftStatus.REJECTED,
-            content,
+            content: generated.content,
             validationResult: validation as unknown as Prisma.InputJsonValue,
             generationContext: {
               generator: 'mock',
               referenceIds: references.map((reference) => reference.id),
+              selectedImageFileIds: generated.selectedImageFileIds,
+              selectionReason: generated.selectionReason,
             },
           },
         });

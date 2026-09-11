@@ -1,4 +1,4 @@
-import { plainToInstance } from 'class-transformer';
+import { plainToInstance, Transform } from 'class-transformer';
 import {
   IsEnum,
   IsInt,
@@ -23,7 +23,13 @@ enum StorageDriver {
 class EnvironmentVariables {
   @IsEnum(NodeEnvironment) NODE_ENV: NodeEnvironment =
     NodeEnvironment.Development;
-  @IsInt() @Min(1) @Max(65535) PORT = 3000;
+  @Transform(({ value }) =>
+    value === '' || value === undefined ? 3000 : Number(value),
+  )
+  @IsInt()
+  @Min(1)
+  @Max(65535)
+  PORT = 3000;
   @IsString() @Matches(/^postgres(?:ql)?:\/\/\S+$/) DATABASE_URL!: string;
   @IsString() LOG_LEVEL = 'log';
   @IsEnum(StorageDriver) STORAGE_DRIVER: StorageDriver = StorageDriver.Local;
@@ -32,6 +38,8 @@ class EnvironmentVariables {
   @IsOptional() @IsString() S3_BUCKET?: string;
   @IsOptional() @IsString() TELEGRAM_BOT_TOKEN?: string;
   @IsOptional() @IsString() TELEGRAM_WEBHOOK_SECRET?: string;
+  @IsOptional() @IsString() OPENAI_API_KEY?: string;
+  @IsOptional() @IsString() OPENAI_MODEL = 'gpt-5.6-luna';
 }
 
 export function validateEnvironment(config: Record<string, unknown>) {

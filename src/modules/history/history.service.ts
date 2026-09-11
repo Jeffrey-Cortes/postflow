@@ -6,6 +6,7 @@ import {
   HistoricalPostImportRow,
   HistoricalPostReference,
 } from './historical-post.types';
+import { parseHistoricalPostsCsv } from './historical-post-csv.parser';
 
 @Injectable()
 export class HistoryService {
@@ -43,5 +44,9 @@ export class HistoryService {
       skipDuplicates: true,
     });
     return result.count;
+  }
+
+  async importCsv(organizationId: string, csv: string): Promise<number> {
+    return this.importRows(organizationId, parseHistoricalPostsCsv(csv));
   }
 }

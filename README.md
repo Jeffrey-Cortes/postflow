@@ -22,6 +22,8 @@ En producción configura `TELEGRAM_WEBHOOK_SECRET` y registra el mismo valor al 
 
 `HistoryService` importa publicaciones normalizadas por organización y plataforma. Durante el MVP recupera hasta tres ejemplos mediante similitud léxica determinista; no copia su texto ni usa embeddings todavía. `DraftGenerationService` usa esas referencias para crear y validar borradores Facebook/X a través de un generador mock intercambiable por un proveedor de IA en una fase posterior.
 
+El importador admite CSV con las columnas obligatorias `platform,text` y las opcionales `externalId,publishedAt,imageUrls`. `imageUrls` acepta varias URLs separadas por `|`; se aceptan `FACEBOOK`, `X` y `TWITTER` como plataforma.
+
 ## Revisión humana
 
 Las acciones de Telegram usan callbacks con el formato `review|ACTION|PLATFORM|REQUEST_ID`. Cada acción se verifica contra un borrador propuesto que pertenezca al usuario solicitante. Aprobar solo guarda la aprobación: el publicador no existe todavía y ninguna acción puede publicar. Editar abre una sesión de 15 minutos para guardar una nueva versión; regenerar crea una nueva versión solo para la plataforma elegida.
