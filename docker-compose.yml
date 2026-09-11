@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: postflow-postgres
+    environment:
+      POSTGRES_DB: postflow
+      POSTGRES_USER: postflow
+      POSTGRES_PASSWORD: postflow
+    ports:
+      - '5432:5432'
+    volumes:
+      - postflow-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postflow -d postflow']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postflow-postgres-data:
