@@ -1,13 +1,20 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
 import { ReviewService } from '../review/review.service';
 import { ReviewPresentationService } from '../review/review-presentation.service';
 import { parseReviewCallback } from '../review/review.types';
 import { DraftGenerationService } from '../generation/draft-generation.service';
 import { TelegramBotApiService } from './telegram-bot-api.service';
+import { MEDIA_STORAGE } from '../storage/media-storage.port';
+import type { MediaStorage } from '../storage/media-storage.port';
 import { normalizeTelegramUpdate } from './telegram-update.normalizer';
 import { NormalizedTelegramMessage, TelegramUpdate } from './telegram.types';
 
@@ -30,6 +37,7 @@ export class TelegramIngestionService {
     private readonly reviewPresentationService: ReviewPresentationService,
     private readonly generationService: DraftGenerationService,
     private readonly telegramBotApiService: TelegramBotApiService,
+    @Inject(MEDIA_STORAGE) private readonly mediaStorage: MediaStorage,
   ) {}
 
   async receive(
@@ -59,9 +67,19 @@ export class TelegramIngestionService {
     });
     if (!user?.isActive) {
       this.logger.warn(
-        `Ignoring update ${message.updateId} from an unauthorized Telegram user`,
+        `Ignoring update ${message.updateId} from unauthorized Telegram user ${message.senderId}`,
       );
       return { accepted: false, ignored: true };
+    }
+    if (!this.assetsAreWithinLimit(message.assets)) {
+      this.logger.warn(
+        `Ignoring update ${message.updateId}: declared media size exceeds the configured limit`,
+      );
+      return {
+        accepted: true,
+        ignored: true,
+        message: 'El archivo excede el tamaño máximo permitido.',
+      };
     }
 
     if (message.text?.trim() === '/finalizar') {
@@ -295,13 +313,55 @@ export class TelegramIngestionService {
     const receivedMessage = await this.prisma.receivedMessage.findUniqueOrThrow(
       { where: { telegramUpdateId }, select: { id: true } },
     );
-    await this.prisma.asset.createMany({
-      data: assets.map((asset) => ({
-        ...asset,
-        publicationRequestId,
-        receivedMessageId: receivedMessage.id,
-      })),
-    });
+    await Promise.all(
+      assets.map(async (asset, index) => {
+        const storedAsset = await this.prisma.asset.create({
+          data: {
+            ...asset,
+            publicationRequestId,
+            receivedMessageId: receivedMessage.id,
+          },
+        });
+        try {
+          const file = await this.telegramBotApiService.downloadFile(
+            asset.telegramFileId,
+            this.maxTelegramFileSize(),
+          );
+          if (
+            asset.kind === 'IMAGE' &&
+            file.contentType &&
+            !file.contentType.toLowerCase().startsWith('image/')
+          ) {
+            throw new Error(
+              'Telegram returned a non-image content type for an image',
+            );
+          }
+          const storageKey = this.storageKey(
+            publicationRequestId,
+            telegramUpdateId,
+            index,
+            asset.telegramFileId,
+          );
+          await this.mediaStorage.store({
+            key: storageKey,
+            body: file.body,
+            contentType: file.contentType ?? asset.mimeType,
+          });
+          await this.prisma.asset.update({
+            where: { id: storedAsset.id },
+            data: {
+              storageKey,
+              mimeType: file.contentType ?? asset.mimeType,
+              sizeBytes: file.body.byteLength,
+            },
+          });
+        } catch (error) {
+          this.logger.warn(
+            `Unable to persist Telegram asset ${storedAsset.id}: ${error instanceof Error ? error.message : 'unknown error'}`,
+          );
+        }
+      }),
+    );
   }
 
   private isUniqueConstraintError(
@@ -310,6 +370,35 @@ export class TelegramIngestionService {
     return (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === 'P2002'
+    );
+  }
+
+  private storageKey(
+    publicationRequestId: string,
+    updateId: string,
+    index: number,
+    telegramFileId: string,
+  ): string {
+    const suffix = createHash('sha256')
+      .update(telegramFileId)
+      .digest('hex')
+      .slice(0, 16);
+    return `telegram/${publicationRequestId}/${updateId}/${index}-${suffix}`;
+  }
+
+  private assetsAreWithinLimit(
+    assets: NormalizedTelegramMessage['assets'],
+  ): boolean {
+    const limit = this.maxTelegramFileSize();
+    return assets.every(
+      (asset) => asset.sizeBytes === undefined || asset.sizeBytes <= limit,
+    );
+  }
+
+  private maxTelegramFileSize(): number {
+    return (
+      this.configService.get<number>('MAX_TELEGRAM_FILE_SIZE_BYTES') ??
+      10 * 1024 * 1024
     );
   }
 }

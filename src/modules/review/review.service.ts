@@ -2,8 +2,9 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import {
   ApprovalDecision,
   DraftStatus,
-  Platform,
   Prisma,
+  PublicationStatus,
+  RequestStatus,
 } from '@prisma/client';
 import { PrismaService } from '../database/prisma.service';
 import { DraftGenerationService } from '../generation/draft-generation.service';
@@ -24,27 +25,27 @@ export class ReviewService {
     userId: string,
     callback: ReviewCallback,
   ): Promise<string> {
-    const draft = await this.findCurrentDraft(
-      userId,
-      callback.publicationRequestId,
-      callback.platform,
-    );
+    const draft = await this.findDraftForAction(userId, callback);
+    if (draft.status !== DraftStatus.PROPOSED) {
+      return 'Esta acción ya fue procesada o el borrador fue reemplazado.';
+    }
     if (callback.action === 'APPROVE' || callback.action === 'REJECT') {
       const decision =
         callback.action === 'APPROVE'
           ? ApprovalDecision.APPROVED
           : ApprovalDecision.REJECTED;
-      await this.prisma.$transaction([
-        this.prisma.draft.update({
-          where: { id: draft.id },
+      const transitioned = await this.prisma.$transaction(async (tx) => {
+        const result = await tx.draft.updateMany({
+          where: { id: draft.id, status: DraftStatus.PROPOSED },
           data: {
             status:
               decision === ApprovalDecision.APPROVED
                 ? DraftStatus.APPROVED
                 : DraftStatus.REJECTED,
           },
-        }),
-        this.prisma.approval.create({
+        });
+        if (result.count === 0) return false;
+        await tx.approval.create({
           data: {
             publicationRequestId: callback.publicationRequestId,
             draftId: draft.id,
@@ -52,38 +53,60 @@ export class ReviewService {
             platform: callback.platform,
             decision,
           },
-        }),
-      ]);
-      if (decision === ApprovalDecision.REJECTED)
+        });
+        return true;
+      });
+      if (!transitioned)
+        return 'Esta acción ya fue procesada o el borrador fue reemplazado.';
+      if (decision === ApprovalDecision.REJECTED) {
+        await this.synchronizeRequestStatus(callback.publicationRequestId);
         return `${callback.platform} rechazado.`;
+      }
       const result = await this.publicationService.publishApproved(
         callback.publicationRequestId,
         callback.platform,
       );
+      await this.synchronizeRequestStatus(callback.publicationRequestId);
       return result.status === 'PUBLISHED'
-        ? `${callback.platform} publicado: ${result.url}`
-        : `${callback.platform} aprobado, pero la publicaci\u00f3n mock fall\u00f3: ${result.error}`;
+        ? `${callback.platform} ${result.simulated ? 'publicaci\u00f3n simulada' : 'publicado'}: ${result.url}`
+        : `${callback.platform} aprobado, pero la publicaci\u00f3n fall\u00f3: ${result.error}`;
     }
     if (callback.action === 'REGENERATE') {
+      const claimed = await this.prisma.draft.updateMany({
+        where: { id: draft.id, status: DraftStatus.PROPOSED },
+        data: { status: DraftStatus.SUPERSEDED },
+      });
+      if (claimed.count === 0)
+        return 'Esta acción ya fue procesada o el borrador fue reemplazado.';
       await this.generationService.generateForRequest(
         callback.publicationRequestId,
         [callback.platform],
       );
       return `Nuevo borrador de ${callback.platform} generado para revisi\u00f3n.`;
     }
-    await this.prisma.reviewSession.updateMany({
-      where: { userId, completedAt: null },
-      data: { completedAt: new Date() },
+    const opened = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.draft.updateMany({
+        where: { id: draft.id, status: DraftStatus.PROPOSED },
+        data: { status: DraftStatus.SUPERSEDED },
+      });
+      if (claimed.count === 0) return false;
+      await tx.reviewSession.updateMany({
+        where: { userId, completedAt: null },
+        data: { completedAt: new Date() },
+      });
+      await tx.reviewSession.create({
+        data: {
+          publicationRequestId: callback.publicationRequestId,
+          userId,
+          platform: callback.platform,
+          action: 'EDIT',
+          expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+        },
+      });
+      return true;
     });
-    await this.prisma.reviewSession.create({
-      data: {
-        publicationRequestId: callback.publicationRequestId,
-        userId,
-        platform: callback.platform,
-        action: 'EDIT',
-        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
-      },
-    });
+    if (!opened)
+      return 'Esta acción ya fue procesada o el borrador fue reemplazado.';
     return `Env\u00eda el nuevo texto para ${callback.platform} dentro de 15 minutos.`;
   }
 
@@ -118,16 +141,20 @@ export class ReviewService {
       content,
       sourceText,
     );
-    const latest = await this.prisma.draft.findFirst({
-      where: {
-        publicationRequestId: session.publicationRequestId,
-        platform: session.platform,
-      },
-      orderBy: { version: 'desc' },
-      select: { version: true },
-    });
-    await this.prisma.$transaction([
-      this.prisma.draft.create({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.publicationRequest.update({
+        where: { id: session.publicationRequestId },
+        data: { status: RequestStatus.PENDING_REVIEW },
+      });
+      const latest = await tx.draft.findFirst({
+        where: {
+          publicationRequestId: session.publicationRequestId,
+          platform: session.platform,
+        },
+        orderBy: { version: 'desc' },
+        select: { version: true },
+      });
+      await tx.draft.create({
         data: {
           publicationRequestId: session.publicationRequestId,
           platform: session.platform,
@@ -139,27 +166,23 @@ export class ReviewService {
           validationResult: validation as unknown as Prisma.InputJsonValue,
           generationContext: { generator: 'human-edit' },
         },
-      }),
-      this.prisma.reviewSession.update({
+      });
+      await tx.reviewSession.update({
         where: { id: session.id },
         data: { completedAt: new Date() },
-      }),
-    ]);
+      });
+    });
     return validation.isValid
       ? `Edici\u00f3n de ${session.platform} guardada para revisi\u00f3n.`
       : `La edici\u00f3n de ${session.platform} fue rechazada por validaci\u00f3n.`;
   }
 
-  private async findCurrentDraft(
-    userId: string,
-    publicationRequestId: string,
-    platform: Platform,
-  ) {
+  private async findDraftForAction(userId: string, callback: ReviewCallback) {
     const draft = await this.prisma.draft.findFirst({
       where: {
-        publicationRequestId,
-        platform,
-        status: DraftStatus.PROPOSED,
+        id: callback.draftId,
+        publicationRequestId: callback.publicationRequestId,
+        platform: callback.platform,
         publicationRequest: { requestedById: userId },
       },
       orderBy: { version: 'desc' },
@@ -169,5 +192,53 @@ export class ReviewService {
         'No active draft was found for this review action',
       );
     return draft;
+  }
+
+  private async synchronizeRequestStatus(
+    publicationRequestId: string,
+  ): Promise<void> {
+    const request = await this.prisma.publicationRequest.findUnique({
+      where: { id: publicationRequestId },
+      select: {
+        drafts: { select: { id: true, status: true } },
+        publications: { select: { draftId: true, status: true } },
+      },
+    });
+    if (!request || request.drafts.length === 0) return;
+
+    const status = this.requestStatus(request.drafts, request.publications);
+    await this.prisma.publicationRequest.update({
+      where: { id: publicationRequestId },
+      data: { status },
+    });
+  }
+
+  private requestStatus(
+    drafts: Array<{ id: string; status: DraftStatus }>,
+    publications: Array<{ draftId: string; status: PublicationStatus }>,
+  ): RequestStatus {
+    if (publications.some(({ status }) => status === PublicationStatus.FAILED))
+      return RequestStatus.FAILED;
+    if (drafts.some(({ status }) => status === DraftStatus.PROPOSED))
+      return RequestStatus.PENDING_REVIEW;
+    if (drafts.every(({ status }) => status === DraftStatus.REJECTED))
+      return RequestStatus.REJECTED;
+
+    const approvedDraftIds = new Set(
+      drafts
+        .filter(({ status }) => status === DraftStatus.APPROVED)
+        .map(({ id }) => id),
+    );
+    const publishedDraftIds = new Set(
+      publications
+        .filter(({ status }) => status === PublicationStatus.PUBLISHED)
+        .map(({ draftId }) => draftId),
+    );
+    if (
+      [...approvedDraftIds].every((draftId) => publishedDraftIds.has(draftId))
+    ) {
+      return RequestStatus.COMPLETED;
+    }
+    return RequestStatus.PENDING_REVIEW;
   }
 }

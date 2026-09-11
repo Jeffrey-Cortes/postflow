@@ -31,5 +31,6 @@ function mockResult(network: string, input: PublishInput): PublishResult {
   return {
     externalPostId: `mock-${network}-${suffix}`,
     externalUrl: `https://mock.${network}.local/posts/${suffix}`,
+    simulated: true,
   };
 }

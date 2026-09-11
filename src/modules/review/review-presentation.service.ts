@@ -33,11 +33,21 @@ export class ReviewPresentationService {
       'X:',
       drafts.get('X')?.content ?? '(sin borrador)',
     ].join('\n');
-    const buttons = ['FACEBOOK', 'X'].flatMap((platform) =>
-      ['APPROVE', 'EDIT', 'REGENERATE', 'REJECT'].map(
-        (action) => `review|${action}|${platform}|${publicationRequestId}`,
-      ),
-    );
+    const buttons = [
+      ...this.buttonsFor('F', publicationRequestId, drafts.get('FACEBOOK')),
+      ...this.buttonsFor('X', publicationRequestId, drafts.get('X')),
+    ];
     return { text, buttons: [buttons] };
+  }
+
+  private buttonsFor(
+    platform: 'F' | 'X',
+    publicationRequestId: string,
+    draft: { id: string } | undefined,
+  ): string[] {
+    if (!draft) return [];
+    return ['A', 'E', 'G', 'R'].map(
+      (action) => `r|${action}|${platform}|${publicationRequestId}|${draft.id}`,
+    );
   }
 }

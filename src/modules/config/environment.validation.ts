@@ -40,6 +40,13 @@ class EnvironmentVariables {
   @IsOptional() @IsString() TELEGRAM_WEBHOOK_SECRET?: string;
   @IsOptional() @IsString() OPENAI_API_KEY?: string;
   @IsOptional() @IsString() OPENAI_MODEL = 'gpt-5.6-luna';
+  @Transform(({ value }) =>
+    value === '' || value === undefined ? 10 * 1024 * 1024 : Number(value),
+  )
+  @IsInt()
+  @Min(1)
+  @Max(20 * 1024 * 1024)
+  MAX_TELEGRAM_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 }
 
 export function validateEnvironment(config: Record<string, unknown>) {
@@ -59,6 +66,27 @@ export function validateEnvironment(config: Record<string, unknown>) {
     throw new Error(
       'Invalid environment configuration: S3_BUCKET is required when STORAGE_DRIVER=s3',
     );
+  }
+  if (
+    environment.STORAGE_DRIVER === StorageDriver.S3 &&
+    !environment.AWS_REGION
+  ) {
+    throw new Error(
+      'Invalid environment configuration: AWS_REGION is required when STORAGE_DRIVER=s3',
+    );
+  }
+  if (environment.NODE_ENV === NodeEnvironment.Production) {
+    const missing = [
+      ['TELEGRAM_BOT_TOKEN', environment.TELEGRAM_BOT_TOKEN],
+      ['TELEGRAM_WEBHOOK_SECRET', environment.TELEGRAM_WEBHOOK_SECRET],
+    ]
+      .filter(([, value]) => !value?.trim())
+      .map(([name]) => name);
+    if (missing.length > 0) {
+      throw new Error(
+        `Invalid environment configuration: ${missing.join(', ')} is required in production`,
+      );
+    }
   }
   return environment;
 }

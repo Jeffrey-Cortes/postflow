@@ -262,7 +262,8 @@ model Publication {
   publicationRequest   PublicationRequest @relation(fields: [publicationRequestId], references: [id])
   draft                Draft             @relation(fields: [draftId], references: [id])
 
-  @@unique([publicationRequestId, platform])
+  @@unique([draftId])
+  @@index([publicationRequestId, platform])
   @@index([status, createdAt])
 }
 

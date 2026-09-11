@@ -9,6 +9,8 @@ import { GenerationModule } from './modules/generation/generation.module';
 import { ValidationModule } from './modules/validation/validation.module';
 import { ReviewModule } from './modules/review/review.module';
 import { PublishingModule } from './modules/publishing/publishing.module';
+import { BootstrapModule } from './modules/bootstrap/bootstrap.module';
+import { StorageModule } from './modules/storage/storage.module';
 
 @Module({
   imports: [
@@ -25,6 +27,8 @@ import { PublishingModule } from './modules/publishing/publishing.module';
     ValidationModule,
     ReviewModule,
     PublishingModule,
+    BootstrapModule,
+    StorageModule,
   ],
 })
 export class AppModule {}
