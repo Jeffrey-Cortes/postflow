@@ -23,7 +23,12 @@ export class DraftGenerationService {
       where: { id: publicationRequestId },
       include: {
         receivedMessages: { orderBy: { receivedAt: 'asc' } },
-        assets: { where: { kind: 'IMAGE', telegramFileId: { not: null } } },
+        assets: {
+          where: {
+            kind: { in: ['IMAGE', 'VIDEO'] },
+            telegramFileId: { not: null },
+          },
+        },
       },
     });
     if (!request) throw new NotFoundException('Publication request not found');
@@ -37,25 +42,53 @@ export class DraftGenerationService {
       '';
     if (!sourceText)
       throw new NotFoundException('Publication request has no text source');
+    const mediaSelectionMode = request.assets.some(
+      (asset) => asset.kind === 'VIDEO',
+    )
+      ? 'MANUAL_VIDEO_SELECTION'
+      : 'AI_IMAGE_SELECTION';
+
+    const referencesByPlatform = Object.fromEntries(
+      await Promise.all(
+        platforms.map(async (platform) => [
+          platform,
+          await this.historyService.findRelevantExamples(
+            request.organizationId,
+            platform,
+            sourceText,
+          ),
+        ]),
+      ),
+    ) as Partial<
+      Record<
+        Platform,
+        Awaited<ReturnType<HistoryService['findRelevantExamples']>>
+      >
+    >;
+    const generatedByPlatform = await this.draftGenerator.generateBatch({
+      platforms,
+      sourceText,
+      referencesByPlatform,
+      availableImageFileIds:
+        mediaSelectionMode === 'AI_IMAGE_SELECTION'
+          ? request.assets.flatMap((asset) =>
+              asset.kind === 'IMAGE' && asset.telegramFileId
+                ? [asset.telegramFileId]
+                : [],
+            )
+          : [],
+      mediaSelectionMode,
+    });
 
     await Promise.all(
       platforms.map(async (platform) => {
-        const references = await this.historyService.findRelevantExamples(
-          request.organizationId,
+        const references = referencesByPlatform[platform] ?? [];
+        const generated = generatedByPlatform[platform];
+        if (!generated)
+          throw new Error(`Generator returned no ${platform} draft`);
+        const validation = this.validationService.validateSegments(
           platform,
-          sourceText,
-        );
-        const generated = await this.draftGenerator.generate({
-          platform,
-          sourceText,
-          references,
-          availableImageFileIds: request.assets.flatMap((asset) =>
-            asset.telegramFileId ? [asset.telegramFileId] : [],
-          ),
-        });
-        const validation = this.validationService.validate(
-          platform,
-          generated.content,
+          generated.segments,
           sourceText,
         );
         await this.persistGeneratedDraft({
@@ -63,11 +96,13 @@ export class DraftGenerationService {
           platform,
           validation,
           content: generated.content,
+          segments: generated.segments,
           generationContext: {
             generator: this.draftGenerator.constructor.name,
             referenceIds: references.map((reference) => reference.id),
             selectedImageFileIds: generated.selectedImageFileIds,
             selectionReason: generated.selectionReason,
+            mediaSelectionMode,
           },
         });
       }),
@@ -77,8 +112,9 @@ export class DraftGenerationService {
   private async persistGeneratedDraft(input: {
     publicationRequestId: string;
     platform: Platform;
-    validation: ReturnType<DraftValidationService['validate']>;
+    validation: ReturnType<DraftValidationService['validateSegments']>;
     content: string;
+    segments: string[];
     generationContext: Prisma.InputJsonValue;
   }): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
@@ -113,6 +149,13 @@ export class DraftGenerationService {
             ? DraftStatus.PROPOSED
             : DraftStatus.REJECTED,
           content: input.content,
+          segments: {
+            create: input.segments.map((content, index) => ({
+              position: index + 1,
+              content,
+              characterCount: [...content].length,
+            })),
+          },
           validationResult:
             input.validation as unknown as Prisma.InputJsonValue,
           generationContext: input.generationContext,

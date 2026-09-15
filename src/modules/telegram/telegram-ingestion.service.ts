@@ -5,7 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma } from '@prisma/client';
+import { Prisma, RequestStatus } from '@prisma/client';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
 import { ReviewService } from '../review/review.service';
@@ -16,6 +16,7 @@ import { TelegramBotApiService } from './telegram-bot-api.service';
 import { MEDIA_STORAGE } from '../storage/media-storage.port';
 import type { MediaStorage } from '../storage/media-storage.port';
 import { normalizeTelegramUpdate } from './telegram-update.normalizer';
+import { resolveImageMimeType } from './telegram-image-mime';
 import { NormalizedTelegramMessage, TelegramUpdate } from './telegram.types';
 
 export interface TelegramIngestionResult {
@@ -51,9 +52,19 @@ export class TelegramIngestionService {
 
     const duplicate = await this.prisma.receivedMessage.findUnique({
       where: { telegramUpdateId: message.updateId },
-      select: { publicationRequestId: true },
+      select: { publicationRequestId: true, mediaGroupId: true },
     });
     if (duplicate) {
+      if (
+        duplicate.publicationRequestId &&
+        !duplicate.mediaGroupId &&
+        (await this.shouldRetryGeneration(duplicate.publicationRequestId))
+      ) {
+        await this.generateAndSendProposal(
+          duplicate.publicationRequestId,
+          message.chatId,
+        );
+      }
       return {
         accepted: true,
         duplicate: true,
@@ -178,14 +189,27 @@ export class TelegramIngestionService {
     publicationRequestId: string,
     chatId: string,
   ): Promise<void> {
-    await this.generationService.generateForRequest(publicationRequestId);
-    const proposal =
-      await this.reviewPresentationService.create(publicationRequestId);
-    await this.telegramBotApiService.sendProposal(
-      chatId,
-      proposal.text,
-      proposal.buttons,
-    );
+    try {
+      await this.generationService.generateForRequest(publicationRequestId);
+      const proposal =
+        await this.reviewPresentationService.create(publicationRequestId);
+      await this.telegramBotApiService.sendProposal(
+        chatId,
+        proposal.text,
+        proposal.buttons,
+      );
+      await Promise.all(
+        proposal.media.map((media) =>
+          this.telegramBotApiService.sendMedia(chatId, media),
+        ),
+      );
+    } catch (error) {
+      await this.prisma.publicationRequest.update({
+        where: { id: publicationRequestId },
+        data: { status: RequestStatus.FAILED },
+      });
+      throw error;
+    }
   }
 
   private assertWebhookSecret(receivedSecret?: string): void {
@@ -327,13 +351,13 @@ export class TelegramIngestionService {
             asset.telegramFileId,
             this.maxTelegramFileSize(),
           );
-          if (
-            asset.kind === 'IMAGE' &&
-            file.contentType &&
-            !file.contentType.toLowerCase().startsWith('image/')
-          ) {
+          const imageMimeType =
+            asset.kind === 'IMAGE'
+              ? resolveImageMimeType(file.body, file.contentType)
+              : undefined;
+          if (asset.kind === 'IMAGE' && !imageMimeType) {
             throw new Error(
-              'Telegram returned a non-image content type for an image',
+              'Telegram returned bytes that are not a supported image',
             );
           }
           const storageKey = this.storageKey(
@@ -345,13 +369,13 @@ export class TelegramIngestionService {
           await this.mediaStorage.store({
             key: storageKey,
             body: file.body,
-            contentType: file.contentType ?? asset.mimeType,
+            contentType: imageMimeType ?? file.contentType ?? asset.mimeType,
           });
           await this.prisma.asset.update({
             where: { id: storedAsset.id },
             data: {
               storageKey,
-              mimeType: file.contentType ?? asset.mimeType,
+              mimeType: imageMimeType ?? file.contentType ?? asset.mimeType,
               sizeBytes: file.body.byteLength,
             },
           });
@@ -399,6 +423,19 @@ export class TelegramIngestionService {
     return (
       this.configService.get<number>('MAX_TELEGRAM_FILE_SIZE_BYTES') ??
       10 * 1024 * 1024
+    );
+  }
+
+  private async shouldRetryGeneration(
+    publicationRequestId: string,
+  ): Promise<boolean> {
+    const request = await this.prisma.publicationRequest.findUnique({
+      where: { id: publicationRequestId },
+      select: { status: true },
+    });
+    return (
+      request?.status === RequestStatus.RECEIVING ||
+      request?.status === RequestStatus.FAILED
     );
   }
 }

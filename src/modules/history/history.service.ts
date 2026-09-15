@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Platform } from '@prisma/client';
+import { createHash } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
 import { rankHistoricalPosts } from './historical-post-ranking';
 import {
@@ -37,7 +38,7 @@ export class HistoryService {
         organizationId,
         platform: row.platform,
         text: row.text,
-        externalId: row.externalId,
+        externalId: row.externalId ?? this.generatedExternalId(row),
         publishedAt: row.publishedAt,
         imageUrls: row.imageUrls,
       })),
@@ -48,5 +49,14 @@ export class HistoryService {
 
   async importCsv(organizationId: string, csv: string): Promise<number> {
     return this.importRows(organizationId, parseHistoricalPostsCsv(csv));
+  }
+
+  private generatedExternalId(row: HistoricalPostImportRow): string {
+    const source = [
+      row.platform,
+      row.text,
+      row.publishedAt?.toISOString() ?? '',
+    ].join('\u0000');
+    return `postflow:${createHash('sha256').update(source).digest('hex')}`;
   }
 }

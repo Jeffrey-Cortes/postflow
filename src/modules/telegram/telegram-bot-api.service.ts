@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { ReviewMedia } from '../review/review-presentation.service';
 
 export interface TelegramInlineButton {
   text: string;
@@ -36,6 +37,13 @@ export class TelegramBotApiService {
 
   async sendText(chatId: string, text: string): Promise<void> {
     await this.call('sendMessage', { chat_id: chatId, text });
+  }
+
+  async sendMedia(chatId: string, media: ReviewMedia): Promise<void> {
+    await this.call(media.kind === 'VIDEO' ? 'sendVideo' : 'sendPhoto', {
+      chat_id: chatId,
+      [media.kind === 'VIDEO' ? 'video' : 'photo']: media.telegramFileId,
+    });
   }
 
   async answerCallback(callbackId: string, text: string): Promise<void> {

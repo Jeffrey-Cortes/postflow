@@ -36,7 +36,10 @@ export class PublicationService {
   ): Promise<PublicationAttemptResult> {
     const draft = await this.prisma.draft.findFirst({
       where: { publicationRequestId, platform, status: DraftStatus.APPROVED },
-      include: { publicationRequest: { select: { organizationId: true } } },
+      include: {
+        publicationRequest: { select: { organizationId: true } },
+        segments: { orderBy: { position: 'asc' } },
+      },
       orderBy: { version: 'desc' },
     });
     if (!draft)
@@ -84,6 +87,7 @@ export class PublicationService {
       const result = await publisher.publish({
         platform,
         content: draft.content,
+        segments: draft.segments.map((segment) => segment.content),
         idempotencyKey: publication.idempotencyKey,
       });
       await this.prisma.publication.update({

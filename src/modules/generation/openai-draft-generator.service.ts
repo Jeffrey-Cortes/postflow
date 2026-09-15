@@ -1,7 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Platform } from '@prisma/client';
 import OpenAI from 'openai';
+import { resolveImageMimeType } from '../telegram/telegram-image-mime';
 import {
+  BatchDraftGenerationInput,
   DraftGenerationInput,
   DraftGenerator,
   GeneratedDraft,
@@ -13,6 +16,21 @@ export class OpenAiDraftGeneratorService implements DraftGenerator {
   constructor(private readonly config: ConfigService) {}
 
   async generate(input: DraftGenerationInput): Promise<GeneratedDraft> {
+    const drafts = await this.generateBatch({
+      platforms: [input.platform],
+      sourceText: input.sourceText,
+      referencesByPlatform: { [input.platform]: input.references },
+      availableImageFileIds: input.availableImageFileIds,
+      mediaSelectionMode: input.mediaSelectionMode,
+    });
+    const draft = drafts[input.platform];
+    if (!draft) throw new Error(`OpenAI returned no ${input.platform} draft`);
+    return draft;
+  }
+
+  async generateBatch(
+    input: BatchDraftGenerationInput,
+  ): Promise<Partial<Record<Platform, GeneratedDraft>>> {
     const apiKey = this.config.get<string>('OPENAI_API_KEY');
     if (!apiKey)
       throw new Error('OPENAI_API_KEY is required for real generation');
@@ -20,15 +38,17 @@ export class OpenAiDraftGeneratorService implements DraftGenerator {
     const client = new OpenAI({ apiKey });
     const response = await client.responses.create({
       model: this.config.get<string>('OPENAI_MODEL') ?? 'gpt-5.6-luna',
-      instructions:
-        'Write an institutional Spanish social media draft. Never invent names, dates, places, titles, URLs, or facts. Use only source material. Historical posts are style reference only; never copy them verbatim. Select images only from the supplied images and only when visually appropriate. Return JSON matching the schema.',
+      instructions: this.instructionsFor(
+        input.platforms,
+        input.mediaSelectionMode === 'MANUAL_VIDEO_SELECTION',
+      ),
       input: [
         {
           role: 'user',
           content: [
             {
               type: 'input_text',
-              text: `Platform: ${input.platform}\nSource material:\n${input.sourceText}\n\nStyle references:\n${input.references.map((reference) => `- ${reference.text}`).join('\n') || '(none)'}\n\nImage IDs supplied in the same order as the images: ${images.fileIds.join(', ') || '(none)'}`,
+              text: this.promptFor(input, images.fileIds),
             },
             ...images.content,
           ],
@@ -39,21 +59,76 @@ export class OpenAiDraftGeneratorService implements DraftGenerator {
           type: 'json_schema',
           name: 'social_draft',
           strict: true,
-          schema: this.schema(images.fileIds),
+          schema: this.schema(images.fileIds, input.platforms),
         },
       },
     });
-    const parsed = JSON.parse(response.output_text) as GeneratedDraft;
-    return {
-      content: parsed.content,
-      selectedImageFileIds: parsed.selectedImageFileIds.filter((id) =>
-        input.availableImageFileIds.includes(id),
-      ),
-      selectionReason: parsed.selectionReason,
-    };
+    const parsed = JSON.parse(response.output_text) as BatchOpenAiResponse;
+    const selectedImageFileIds = parsed.selectedImageFileIds.filter((id) =>
+      input.availableImageFileIds.includes(id),
+    );
+    return Object.fromEntries(
+      input.platforms.flatMap((platform) => {
+        const value = parsed.drafts?.[platform];
+        if (!value) return [];
+        const segments = this.normalizedSegments(value.segments, value.content);
+        return [
+          [
+            platform,
+            {
+              content: segments.join('\n\n'),
+              segments,
+              selectedImageFileIds,
+              selectionReason: parsed.selectionReason,
+            },
+          ],
+        ];
+      }),
+    );
   }
 
-  private schema(imageIds: string[]): Record<string, unknown> {
+  private instructionsFor(platforms: string[], hasVideo: boolean): string {
+    const platformInstructions = platforms
+      .map((platform) =>
+        platform === 'X'
+          ? 'For X, return one segment when the message fits naturally. Otherwise return a coherent thread of at most five segments. Every segment must be at most 280 Unicode characters, must stand as a complete thought, and must not include artificial numbering such as 1/3.'
+          : 'For Facebook, return exactly one segment.',
+      )
+      .join(' ');
+    const mediaInstruction = hasVideo
+      ? 'A video is present, so do not select any media; a human must choose it.'
+      : 'Select images only from the supplied images and only when visually appropriate.';
+    return `Write institutional Spanish social media drafts. Never invent names, dates, places, titles, URLs, or facts. Use only source material. Historical posts are style reference only; never copy them verbatim. Keep every platform draft factually consistent with the others while adapting its style. ${platformInstructions} ${mediaInstruction} Return JSON matching the schema.`;
+  }
+
+  private promptFor(
+    input: BatchDraftGenerationInput,
+    imageIds: string[],
+  ): string {
+    const references = input.platforms
+      .map(
+        (platform) =>
+          `${platform} style references:\n${(input.referencesByPlatform[platform] ?? []).map((reference) => `- ${reference.text}`).join('\n') || '(none)'}`,
+      )
+      .join('\n\n');
+    return `Target platforms: ${input.platforms.join(', ')}\nSource material:\n${input.sourceText}\n\n${references}\n\nMedia selection mode: ${input.mediaSelectionMode}\nImage IDs supplied in the same order as the images: ${imageIds.join(', ') || '(none)'}`;
+  }
+
+  private normalizedSegments(segments: unknown, fallback: unknown): string[] {
+    const values = Array.isArray(segments) ? segments : [fallback];
+    const normalized = values
+      .filter((value): value is string => typeof value === 'string')
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (normalized.length === 0)
+      throw new Error('OpenAI returned no draft segments');
+    return normalized;
+  }
+
+  private schema(
+    imageIds: string[],
+    platforms: string[],
+  ): Record<string, unknown> {
     const imageItem =
       imageIds.length > 0
         ? { type: 'string', enum: imageIds }
@@ -62,7 +137,29 @@ export class OpenAiDraftGeneratorService implements DraftGenerator {
       type: 'object',
       additionalProperties: false,
       properties: {
-        content: { type: 'string' },
+        drafts: {
+          type: 'object',
+          additionalProperties: false,
+          properties: Object.fromEntries(
+            platforms.map((platform) => [
+              platform,
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  segments: {
+                    type: 'array',
+                    minItems: 1,
+                    maxItems: platform === 'X' ? 5 : 1,
+                    items: { type: 'string' },
+                  },
+                },
+                required: ['segments'],
+              },
+            ]),
+          ),
+          required: platforms,
+        },
         selectedImageFileIds: {
           type: 'array',
           items: imageItem,
@@ -70,7 +167,7 @@ export class OpenAiDraftGeneratorService implements DraftGenerator {
         },
         selectionReason: { type: 'string' },
       },
-      required: ['content', 'selectedImageFileIds', 'selectionReason'],
+      required: ['drafts', 'selectedImageFileIds', 'selectionReason'],
     };
   }
 
@@ -122,10 +219,15 @@ export class OpenAiDraftGeneratorService implements DraftGenerator {
           `Telegram file download failed with HTTP ${fileResponse.status}`,
         );
       const bytes = Buffer.from(await fileResponse.arrayBuffer());
+      const mimeType = resolveImageMimeType(
+        bytes,
+        fileResponse.headers.get('content-type') ?? undefined,
+      );
+      if (!mimeType) throw new Error('Telegram returned an unsupported image');
       return {
         fileId,
         type: 'input_image',
-        image_url: `data:${fileResponse.headers.get('content-type') ?? 'image/jpeg'};base64,${bytes.toString('base64')}`,
+        image_url: `data:${mimeType};base64,${bytes.toString('base64')}`,
         detail: 'low',
       };
     } catch (error) {
@@ -145,4 +247,10 @@ interface OpenAiImageContent {
   type: 'input_image';
   image_url: string;
   detail: 'low';
+}
+
+interface BatchOpenAiResponse {
+  drafts?: Partial<Record<string, { segments?: unknown; content?: unknown }>>;
+  selectedImageFileIds: string[];
+  selectionReason: string;
 }

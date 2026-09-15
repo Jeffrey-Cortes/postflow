@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   ApprovalDecision,
   DraftStatus,
@@ -19,6 +20,7 @@ export class ReviewService {
     private readonly generationService: DraftGenerationService,
     private readonly validationService: DraftValidationService,
     private readonly publicationService: PublicationService,
+    private readonly configService: ConfigService,
   ) {}
 
   async applyCallback(
@@ -59,8 +61,18 @@ export class ReviewService {
       if (!transitioned)
         return 'Esta acción ya fue procesada o el borrador fue reemplazado.';
       if (decision === ApprovalDecision.REJECTED) {
-        await this.synchronizeRequestStatus(callback.publicationRequestId);
+        await this.synchronizeRequestStatus(
+          callback.publicationRequestId,
+          this.isManualPublishing(),
+        );
         return `${callback.platform} rechazado.`;
+      }
+      if (this.isManualPublishing()) {
+        await this.synchronizeRequestStatus(
+          callback.publicationRequestId,
+          true,
+        );
+        return `${callback.platform} aprobado. Listo para publicación manual: usa el texto y material enviado por el bot.`;
       }
       const result = await this.publicationService.publishApproved(
         callback.publicationRequestId,
@@ -107,7 +119,9 @@ export class ReviewService {
     });
     if (!opened)
       return 'Esta acción ya fue procesada o el borrador fue reemplazado.';
-    return `Env\u00eda el nuevo texto para ${callback.platform} dentro de 15 minutos.`;
+    return callback.platform === 'X'
+      ? 'Envía el nuevo texto para X dentro de 15 minutos. Para editar un hilo, separa cada parte con una línea que contenga únicamente ---. '
+      : `Envía el nuevo texto para ${callback.platform} dentro de 15 minutos.`;
   }
 
   async consumePendingEdit(
@@ -136,9 +150,13 @@ export class ReviewService {
         .join('\n') ||
       session.publicationRequest.sourceSummary ||
       '';
-    const validation = this.validationService.validate(
+    const segments =
+      session.platform === 'X'
+        ? splitThreadSegments(content)
+        : [content.trim()];
+    const validation = this.validationService.validateSegments(
       session.platform,
-      content,
+      segments,
       sourceText,
     );
     await this.prisma.$transaction(async (tx) => {
@@ -162,7 +180,14 @@ export class ReviewService {
           status: validation.isValid
             ? DraftStatus.PROPOSED
             : DraftStatus.REJECTED,
-          content,
+          content: segments.join('\n\n'),
+          segments: {
+            create: segments.map((segment, index) => ({
+              position: index + 1,
+              content: segment,
+              characterCount: [...segment].length,
+            })),
+          },
           validationResult: validation as unknown as Prisma.InputJsonValue,
           generationContext: { generator: 'human-edit' },
         },
@@ -196,6 +221,7 @@ export class ReviewService {
 
   private async synchronizeRequestStatus(
     publicationRequestId: string,
+    manualPublishing = false,
   ): Promise<void> {
     const request = await this.prisma.publicationRequest.findUnique({
       where: { id: publicationRequestId },
@@ -206,7 +232,11 @@ export class ReviewService {
     });
     if (!request || request.drafts.length === 0) return;
 
-    const status = this.requestStatus(request.drafts, request.publications);
+    const status = this.requestStatus(
+      request.drafts,
+      request.publications,
+      manualPublishing,
+    );
     await this.prisma.publicationRequest.update({
       where: { id: publicationRequestId },
       data: { status },
@@ -216,6 +246,7 @@ export class ReviewService {
   private requestStatus(
     drafts: Array<{ id: string; status: DraftStatus }>,
     publications: Array<{ draftId: string; status: PublicationStatus }>,
+    manualPublishing: boolean,
   ): RequestStatus {
     if (publications.some(({ status }) => status === PublicationStatus.FAILED))
       return RequestStatus.FAILED;
@@ -223,6 +254,7 @@ export class ReviewService {
       return RequestStatus.PENDING_REVIEW;
     if (drafts.every(({ status }) => status === DraftStatus.REJECTED))
       return RequestStatus.REJECTED;
+    if (manualPublishing) return RequestStatus.READY_FOR_MANUAL_PUBLICATION;
 
     const approvedDraftIds = new Set(
       drafts
@@ -241,4 +273,15 @@ export class ReviewService {
     }
     return RequestStatus.PENDING_REVIEW;
   }
+
+  private isManualPublishing(): boolean {
+    return this.configService.get<string>('PUBLISHING_MODE') !== 'mock';
+  }
+}
+
+function splitThreadSegments(content: string): string[] {
+  return content
+    .split(/^---$/mu)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
 }

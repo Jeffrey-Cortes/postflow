@@ -16,6 +16,7 @@ describe('ReviewPresentationService', () => {
               content: 'Texto',
             },
           ],
+          assets: [],
         }),
       },
     };

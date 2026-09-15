@@ -19,6 +19,10 @@ enum StorageDriver {
   Local = 'local',
   S3 = 's3',
 }
+enum PublishingMode {
+  Manual = 'manual',
+  Mock = 'mock',
+}
 
 class EnvironmentVariables {
   @IsEnum(NodeEnvironment) NODE_ENV: NodeEnvironment =
@@ -40,6 +44,8 @@ class EnvironmentVariables {
   @IsOptional() @IsString() TELEGRAM_WEBHOOK_SECRET?: string;
   @IsOptional() @IsString() OPENAI_API_KEY?: string;
   @IsOptional() @IsString() OPENAI_MODEL = 'gpt-5.6-luna';
+  @IsEnum(PublishingMode) PUBLISHING_MODE: PublishingMode =
+    PublishingMode.Manual;
   @Transform(({ value }) =>
     value === '' || value === undefined ? 10 * 1024 * 1024 : Number(value),
   )

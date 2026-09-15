@@ -7,7 +7,12 @@ export function parseHistoricalPostsCsv(
 ): HistoricalPostImportRow[] {
   const records = parseCsv(csv);
   if (records.length < 2) return [];
-  const headers = records[0].map((header) => header.trim().toLowerCase());
+  const headers = records[0].map((header) =>
+    header
+      .replace(/^\uFEFF/u, '')
+      .trim()
+      .toLowerCase(),
+  );
   const platformIndex = headers.indexOf('platform');
   const textIndex = headers.indexOf('text');
   if (platformIndex < 0 || textIndex < 0)
