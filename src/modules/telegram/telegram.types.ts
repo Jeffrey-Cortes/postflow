@@ -20,6 +20,7 @@ export interface TelegramMessage {
   chat: { id: number | string };
   from?: { id: number | string; first_name?: string; last_name?: string };
   photo?: TelegramPhoto[];
+  video?: TelegramVideo;
   document?: TelegramDocument;
 }
 
@@ -30,6 +31,12 @@ export interface TelegramPhoto {
   height: number;
 }
 export interface TelegramDocument {
+  file_id: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+export interface TelegramVideo {
   file_id: string;
   file_name?: string;
   mime_type?: string;
@@ -46,7 +53,7 @@ export interface NormalizedTelegramMessage {
   caption?: string;
   receivedAt: Date;
   assets: Array<{
-    kind: 'IMAGE' | 'DOCUMENT';
+    kind: 'IMAGE' | 'VIDEO' | 'DOCUMENT';
     telegramFileId: string;
     originalFilename?: string;
     mimeType?: string;

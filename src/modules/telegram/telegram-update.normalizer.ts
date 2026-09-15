@@ -19,9 +19,19 @@ export function normalizeTelegramUpdate(
       telegramFileId: largestPhoto.file_id,
       sizeBytes: largestPhoto.file_size,
     });
+  if (message.video)
+    assets.push({
+      kind: 'VIDEO',
+      telegramFileId: message.video.file_id,
+      originalFilename: message.video.file_name,
+      mimeType: message.video.mime_type,
+      sizeBytes: message.video.file_size,
+    });
   if (message.document)
     assets.push({
-      kind: 'DOCUMENT',
+      kind: message.document.mime_type?.toLowerCase().startsWith('video/')
+        ? 'VIDEO'
+        : 'DOCUMENT',
       telegramFileId: message.document.file_id,
       originalFilename: message.document.file_name,
       mimeType: message.document.mime_type,

@@ -17,6 +17,7 @@ enum RequestStatus {
   READY_FOR_GENERATION
   PENDING_REVIEW
   PUBLISHING
+  READY_FOR_MANUAL_PUBLICATION
   COMPLETED
   REJECTED
   FAILED
@@ -24,6 +25,7 @@ enum RequestStatus {
 
 enum AssetKind {
   IMAGE
+  VIDEO
   DOCUMENT
 }
 
@@ -191,11 +193,25 @@ model Draft {
   generationContext    Json?
   createdAt            DateTime           @default(now())
   publicationRequest   PublicationRequest @relation(fields: [publicationRequestId], references: [id])
+  segments             DraftSegment[]
   approvals            Approval[]
   publications         Publication[]
 
   @@unique([publicationRequestId, platform, version])
   @@index([publicationRequestId, platform, status])
+}
+
+model DraftSegment {
+  id             String   @id @default(cuid())
+  draftId        String
+  position       Int
+  content        String
+  characterCount Int
+  createdAt      DateTime @default(now())
+  draft          Draft    @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  @@unique([draftId, position])
+  @@index([draftId, position])
 }
 
 model HistoricalPost {

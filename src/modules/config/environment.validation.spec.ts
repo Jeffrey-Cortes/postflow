@@ -7,6 +7,7 @@ describe('validateEnvironment', () => {
     expect(validateEnvironment({ DATABASE_URL: databaseUrl })).toMatchObject({
       PORT: 3000,
       STORAGE_DRIVER: 'local',
+      PUBLISHING_MODE: 'manual',
     });
   });
   it('requires a bucket when S3 storage is selected', () => {

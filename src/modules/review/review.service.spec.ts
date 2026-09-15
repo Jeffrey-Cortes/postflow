@@ -10,7 +10,11 @@ describe('ReviewService', () => {
   const publicationRequestId = 'request-1';
   const userId = 'user-1';
 
-  function createService(request: unknown, publicationResult?: unknown) {
+  function createService(
+    request: unknown,
+    publishingMode: 'manual' | 'mock' = 'mock',
+    publicationResult?: unknown,
+  ) {
     const prisma = {
       draft: {
         findFirst: jest
@@ -42,6 +46,7 @@ describe('ReviewService', () => {
         {} as never,
         {} as never,
         publicationService as never,
+        { get: jest.fn().mockReturnValue(publishingMode) } as never,
       ),
     };
   }
@@ -97,6 +102,34 @@ describe('ReviewService', () => {
     expect(prisma.publicationRequest.update).toHaveBeenCalledWith({
       where: { id: publicationRequestId },
       data: { status: RequestStatus.COMPLETED },
+    });
+  });
+
+  it('delivers an approved request for manual publication without calling a publisher', async () => {
+    const { service, prisma, publicationService } = createService(
+      {
+        drafts: [
+          { id: 'draft-1', status: DraftStatus.APPROVED },
+          { id: 'draft-2', status: DraftStatus.REJECTED },
+        ],
+        publications: [],
+      },
+      'manual',
+    );
+
+    await expect(
+      service.applyCallback(userId, {
+        action: 'APPROVE',
+        platform: Platform.FACEBOOK,
+        publicationRequestId,
+        draftId: 'draft-1',
+      }),
+    ).resolves.toContain('Listo para publicación manual');
+
+    expect(publicationService.publishApproved).not.toHaveBeenCalled();
+    expect(prisma.publicationRequest.update).toHaveBeenCalledWith({
+      where: { id: publicationRequestId },
+      data: { status: RequestStatus.READY_FOR_MANUAL_PUBLICATION },
     });
   });
 });

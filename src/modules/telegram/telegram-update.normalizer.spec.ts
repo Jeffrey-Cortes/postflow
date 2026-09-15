@@ -36,4 +36,33 @@ describe('normalizeTelegramUpdate', () => {
       }),
     ).toBeNull();
   });
+
+  it('normalizes native videos as video assets', () => {
+    const result = normalizeTelegramUpdate({
+      update_id: 12,
+      message: {
+        message_id: 13,
+        date: 1_700_000_000,
+        caption: 'Activación con video',
+        chat: { id: -1001 },
+        from: { id: 55 },
+        video: {
+          file_id: 'video-file',
+          file_name: 'activacion.mp4',
+          mime_type: 'video/mp4',
+          file_size: 2048,
+        },
+      },
+    });
+
+    expect(result?.assets).toEqual([
+      {
+        kind: 'VIDEO',
+        telegramFileId: 'video-file',
+        originalFilename: 'activacion.mp4',
+        mimeType: 'video/mp4',
+        sizeBytes: 2048,
+      },
+    ]);
+  });
 });

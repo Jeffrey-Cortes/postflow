@@ -7,6 +7,7 @@ describe('MockFacebookPublisher', () => {
     const input = {
       platform: Platform.FACEBOOK,
       content: 'contenido',
+      segments: ['contenido'],
       idempotencyKey: 'stable-key',
     };
     await expect(publisher.publish(input)).resolves.toEqual(

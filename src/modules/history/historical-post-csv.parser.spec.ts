@@ -16,4 +16,17 @@ describe('parseHistoricalPostsCsv', () => {
       },
     ]);
   });
+
+  it('accepts UTF-8 CSV files exported by Excel with a byte order mark', () => {
+    expect(
+      parseHistoricalPostsCsv(
+        '\uFEFFplatform,text\nX,"Publicación con emoji 🎉"',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        platform: Platform.X,
+        text: 'Publicación con emoji 🎉',
+      }),
+    ]);
+  });
 });
